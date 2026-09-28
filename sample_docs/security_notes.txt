@@ -1,0 +1,1 @@
+Sensitive research material should remain on a controlled machine when external processing is not approved. Local inference can keep document text away from third-party APIs, but the operator must still protect the device, review model licenses, and remove stored indexes when the work ends.
