@@ -2,6 +2,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import time
 import uuid
 
 import ollama
@@ -10,10 +11,6 @@ from pypdf import PdfReader
 
 st.set_page_config(page_title="Local RAG Research Assistant", layout="wide")
 
-# ---------- Settings ----------
-# Local mode (default): Ollama on your own computer, storage in research.db.
-# Hosted mode: turns on automatically when HOSTED_API_KEY is set (environment
-# variable or Streamlit secret). Used for the public deployment.
 EMBED_MODEL = "granite-embedding:30m"
 CHAT_MODEL = "gemma3:1b"
 CHUNK_SIZE = 900
@@ -43,8 +40,6 @@ HOSTED_CHAT_MODEL = get_setting("HOSTED_CHAT_MODEL", "gemini-2.5-flash")
 def get_db_path():
     if not HOSTED_MODE:
         return "research.db"
-    # Hosted mode: every browser session gets its own private database file,
-    # so visitors never see each other's documents.
     if "db_path" not in st.session_state:
         st.session_state.db_path = os.path.join(tempfile.gettempdir(), f"research_{uuid.uuid4().hex}.db")
     return st.session_state.db_path
@@ -54,11 +49,10 @@ DB_PATH = get_db_path()
 DB_LABEL = "this session's knowledge base" if HOSTED_MODE else "research.db"
 
 
-# ---------- Model access (Ollama locally, hosted API when deployed) ----------
 def get_hosted_client():
     from openai import OpenAI
 
-    return OpenAI(api_key=HOSTED_API_KEY, base_url=HOSTED_BASE_URL)
+    return OpenAI(api_key=HOSTED_API_KEY, base_url=HOSTED_BASE_URL, max_retries=0)
 
 
 def embed_texts(texts):
@@ -78,12 +72,21 @@ def embed_texts(texts):
 
 def chat_completion(messages):
     if HOSTED_MODE:
-        response = get_hosted_client().chat.completions.create(model=HOSTED_CHAT_MODEL, messages=messages)
-        return response.choices[0].message.content or ""
+        client = get_hosted_client()
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            try:
+                response = client.chat.completions.create(model=HOSTED_CHAT_MODEL, messages=messages)
+                return response.choices[0].message.content or ""
+            except Exception as error:
+                is_overloaded = "503" in str(error) or "UNAVAILABLE" in str(error)
+                if is_overloaded and attempt < attempts:
+                    time.sleep(2 * attempt)
+                    continue
+                raise
     return ollama.chat(model=CHAT_MODEL, messages=messages).message.content
 
 
-# ---------- Document processing ----------
 def extract_documents(uploaded_files):
     pages = []
     for uploaded_file in uploaded_files:
@@ -133,7 +136,6 @@ def literal_phrase_search(chunks, question):
     return [chunk for chunk in chunks if normalized_question in chunk["content"].lower()]
 
 
-# ---------- Knowledge base ----------
 def initialize_database():
     connection = sqlite3.connect(DB_PATH)
     try:
@@ -202,7 +204,6 @@ def load_rows(selected_sources=None):
         connection.close()
 
 
-# ---------- Retrieval and answers ----------
 def cosine_similarity(left, right):
     dot_product = sum(a * b for a, b in zip(left, right))
     left_magnitude = sum(value * value for value in left) ** 0.5
@@ -250,7 +251,6 @@ def render_evidence(evidence):
 
 initialize_database()
 
-# ===== UI =====
 st.markdown("""
     <style>
         .main .block-container {
@@ -259,8 +259,6 @@ st.markdown("""
             padding-top: 2rem;
             padding-bottom: 1rem;
         }
-
-        /* Tighter sidebar */
         section[data-testid="stSidebar"] [data-testid="stSidebarHeader"] {
             height: 1.5rem;
             padding: 0;
@@ -289,7 +287,6 @@ if HOSTED_MODE:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# ---------- SIDEBAR: document management, debug tools 1-4 ----------
 with st.sidebar:
     st.header("Documents")
     uploaded_files = st.file_uploader(
@@ -316,7 +313,6 @@ with st.sidebar:
     run_preview = st.button("3. Preview semantic retrieval", disabled=not question, use_container_width=True)
     run_ask = st.button("4. Ask the research assistant", disabled=not question, use_container_width=True)
 
-# ---------- MAIN AREA: two fixed-height, independently scrollable cards ----------
 col_results, col_chat = st.columns([1, 1])
 
 with col_results:
