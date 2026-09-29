@@ -68,7 +68,10 @@ def embed_texts(texts):
         for start in range(0, len(texts), EMBED_BATCH_SIZE):
             batch = texts[start:start + EMBED_BATCH_SIZE]
             response = client.embeddings.create(model=HOSTED_EMBED_MODEL, input=batch)
-            vectors.extend(item.embedding for item in sorted(response.data, key=lambda item: item.index))
+            data = response.data
+            if all(item.index is not None for item in data):
+                data = sorted(data, key=lambda item: item.index)
+            vectors.extend(item.embedding for item in data)
         return vectors
     return ollama.embed(model=EMBED_MODEL, input=texts).embeddings
 
