@@ -2,6 +2,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import time
 import uuid
 
 import ollama
@@ -58,7 +59,9 @@ DB_LABEL = "this session's knowledge base" if HOSTED_MODE else "research.db"
 def get_hosted_client():
     from openai import OpenAI
 
-    return OpenAI(api_key=HOSTED_API_KEY, base_url=HOSTED_BASE_URL)
+    # max_retries=0: our own retry loop in chat_completion() controls waiting,
+    # so the two don't stack and leave the person waiting far longer than expected.
+    return OpenAI(api_key=HOSTED_API_KEY, base_url=HOSTED_BASE_URL, max_retries=0)
 
 
 def embed_texts(texts):
@@ -78,8 +81,18 @@ def embed_texts(texts):
 
 def chat_completion(messages):
     if HOSTED_MODE:
-        response = get_hosted_client().chat.completions.create(model=HOSTED_CHAT_MODEL, messages=messages)
-        return response.choices[0].message.content or ""
+        client = get_hosted_client()
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            try:
+                response = client.chat.completions.create(model=HOSTED_CHAT_MODEL, messages=messages)
+                return response.choices[0].message.content or ""
+            except Exception as error:
+                is_overloaded = "503" in str(error) or "UNAVAILABLE" in str(error)
+                if is_overloaded and attempt < attempts:
+                    time.sleep(2 * attempt)
+                    continue
+                raise
     return ollama.chat(model=CHAT_MODEL, messages=messages).message.content
 
 
